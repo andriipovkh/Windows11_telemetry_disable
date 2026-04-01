@@ -1,5 +1,5 @@
 # =============================================================================
-# Windows 11 Telemetry & Privacy Reduction Script
+# Windows 11 Telemetry Reduction & Privacy improvement Script
 # Version 2.0
 # =============================================================================
 # Covers:
