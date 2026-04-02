@@ -347,18 +347,26 @@ $telemetryHosts = @(
 )
 
 $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-$existing  = Get-Content $hostsPath -Raw
 
-$added = 0
+# Read with .NET to avoid PowerShell stream conflicts
+$existing = [System.IO.File]::ReadAllText($hostsPath)
+
+# Collect new entries first, then write once
+$newEntries = [System.Collections.Generic.List[string]]::new()
 foreach ($tHost in $telemetryHosts) {
     if ($existing -notmatch [regex]::Escape($tHost)) {
-        Add-Content -Path $hostsPath -Value "0.0.0.0`t$tHost"
-        $added++
+        $newEntries.Add("0.0.0.0`t$tHost")
         $Script:PassCount++
     }
 }
-if ($added -gt 0) {
-    Write-Host "  [OK] Added $added telemetry hosts to $hostsPath"
+
+if ($newEntries.Count -gt 0) {
+    # Ensure the file ends with a newline before appending
+    if (-not $existing.EndsWith("`n")) {
+        [System.IO.File]::AppendAllText($hostsPath, [System.Environment]::NewLine)
+    }
+    [System.IO.File]::AppendAllLines($hostsPath, $newEntries)
+    Write-Host "  [OK] Added $($newEntries.Count) telemetry hosts to $hostsPath"
 } else {
     Write-Host "  [OK] All telemetry hosts already present in hosts file"
 }
