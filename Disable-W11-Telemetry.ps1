@@ -350,9 +350,9 @@ $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
 $existing  = Get-Content $hostsPath -Raw
 
 $added = 0
-foreach ($host in $telemetryHosts) {
-    if ($existing -notmatch [regex]::Escape($host)) {
-        Add-Content -Path $hostsPath -Value "0.0.0.0`t$host"
+foreach ($tHost in $telemetryHosts) {
+    if ($existing -notmatch [regex]::Escape($tHost)) {
+        Add-Content -Path $hostsPath -Value "0.0.0.0`t$tHost"
         $added++
         $Script:PassCount++
     }
