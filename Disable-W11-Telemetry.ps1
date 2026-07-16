@@ -1,6 +1,6 @@
 # =============================================================================
 # Windows 11 Telemetry Reduction & Privacy improvement Script
-# Version 2.1
+# Version 2.2
 # =============================================================================
 # Covers:
 #   1.  Diagnostic data registry keys
@@ -25,6 +25,18 @@
 #  20.  Summary report + transcript log
 # =============================================================================
 # Changelog
+#   2.2  - Every check now reports whether it actually changed something.
+#           Set-RegValue reads the existing value before writing and tags
+#           each line [CHANGED] (was something else), [CREATED] (value
+#           didn't exist), or [SAME] (already correct) instead of a single
+#           generic [OK]. Disable-ServiceSafe and Disable-ScheduledTaskSafe
+#           do the equivalent by checking StartType/State beforehand.
+#           Section 19's hosts-file loop now counts already-present entries
+#           too, not just newly-added ones. $Script:PassCount is replaced by
+#           $Script:ChangedCount + $Script:AlreadySetCount, and the summary
+#           box breaks those out separately so a re-run against an
+#           already-hardened machine is easy to tell apart from one that
+#           actually changed things.
 #   2.1  - Fixed Disable-ScheduledTaskSafe: Get-ScheduledTask requires the
 #           trailing backslash on -TaskPath. Split-Path strips it when it
 #           computes the parent folder, so every task in Section 4 was being
@@ -54,14 +66,15 @@ Start-Transcript -Path $LogPath -Append | Out-Null
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   Windows 11 Telemetry Reduction  v2.1                   ║" -ForegroundColor Cyan
+Write-Host "║   Windows 11 Telemetry Reduction  v2.2                   ║" -ForegroundColor Cyan
 Write-Host "║   Log → $LogPath   ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
 # Counters for the final summary
-$Script:PassCount = 0
-$Script:FailCount = 0
+$Script:ChangedCount    = 0   # setting was different (or missing) and is now corrected
+$Script:AlreadySetCount = 0   # setting already matched the target value — no-op
+$Script:FailCount       = 0
 
 #endregion
 
@@ -69,7 +82,8 @@ $Script:FailCount = 0
 
 function Set-RegValue {
     <#
-    .SYNOPSIS  Creates the registry path if missing, then writes the value.
+    .SYNOPSIS  Creates the registry path if missing, then writes the value —
+               and reports whether this run actually changed anything.
     .PARAMETER Path   Full HKLM:/HKCU: registry path.
     .PARAMETER Name   Value name.
     .PARAMETER Value  Data to write.
@@ -82,12 +96,37 @@ function Set-RegValue {
         [string]$Type = "DWord"
     )
     try {
-        if (-not (Test-Path $Path)) {
+        $existed  = Test-Path $Path
+        $hadValue = $false
+        $previous = $null
+
+        if ($existed) {
+            # Read the current value BEFORE we overwrite it, so we can report
+            # what actually changed instead of just "done".
+            $prop = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+            if ($null -ne $prop) {
+                $previous = $prop.$Name
+                $hadValue = $true
+            }
+        }
+        else {
             New-Item -Path $Path -Force | Out-Null
         }
+
         Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
-        Write-Host "  [OK] $Path\$Name = $Value"
-        $Script:PassCount++
+
+        if ($hadValue -and $previous -eq $Value) {
+            Write-Host "  [SAME]    $Path\$Name = $Value" -ForegroundColor DarkGray
+            $Script:AlreadySetCount++
+        }
+        elseif ($hadValue) {
+            Write-Host "  [CHANGED] $Path\$Name : $previous -> $Value" -ForegroundColor Green
+            $Script:ChangedCount++
+        }
+        else {
+            Write-Host "  [CREATED] $Path\$Name = $Value (value did not exist)" -ForegroundColor Green
+            $Script:ChangedCount++
+        }
     }
     catch {
         Write-Warning "  [FAIL] $Path\$Name — $_"
@@ -104,9 +143,18 @@ function Disable-ScheduledTaskSafe {
         $folder = (Split-Path $TaskPath) + '\'
         $name   = Split-Path $TaskPath -Leaf
         $t = Get-ScheduledTask -TaskPath $folder -TaskName $name -ErrorAction Stop
+
+        $alreadyDisabled = ($t.State -eq 'Disabled')
         Disable-ScheduledTask -InputObject $t | Out-Null
-        Write-Host "  [OK] Task disabled: $TaskPath"
-        $Script:PassCount++
+
+        if ($alreadyDisabled) {
+            Write-Host "  [SAME]    Task already disabled: $TaskPath" -ForegroundColor DarkGray
+            $Script:AlreadySetCount++
+        }
+        else {
+            Write-Host "  [CHANGED] Task $TaskPath : $($t.State) -> Disabled" -ForegroundColor Green
+            $Script:ChangedCount++
+        }
     }
     catch {
         Write-Warning "  [SKIP] Task not found or already disabled: $TaskPath"
@@ -117,10 +165,20 @@ function Disable-ScheduledTaskSafe {
 function Disable-ServiceSafe {
     param([string]$Name)
     try {
+        $svc = Get-Service -Name $Name -ErrorAction Stop
+        $alreadyDisabled = ($svc.StartType -eq 'Disabled')
+
         Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
         Set-Service  -Name $Name -StartupType Disabled -ErrorAction Stop
-        Write-Host "  [OK] Service disabled: $Name"
-        $Script:PassCount++
+
+        if ($alreadyDisabled) {
+            Write-Host "  [SAME]    Service already disabled: $Name" -ForegroundColor DarkGray
+            $Script:AlreadySetCount++
+        }
+        else {
+            Write-Host "  [CHANGED] Service $Name : $($svc.StartType) -> Disabled" -ForegroundColor Green
+            $Script:ChangedCount++
+        }
     }
     catch {
         Write-Warning "  [SKIP] Service not found: $Name"
@@ -417,7 +475,10 @@ $newEntries = [System.Collections.Generic.List[string]]::new()
 foreach ($tHost in $telemetryHosts) {
     if ($existing -notmatch [regex]::Escape($tHost)) {
         $newEntries.Add("0.0.0.0`t$tHost")
-        $Script:PassCount++
+        $Script:ChangedCount++
+    }
+    else {
+        $Script:AlreadySetCount++
     }
 }
 
@@ -427,9 +488,9 @@ if ($newEntries.Count -gt 0) {
         [System.IO.File]::AppendAllText($hostsPath, [System.Environment]::NewLine)
     }
     [System.IO.File]::AppendAllLines($hostsPath, $newEntries)
-    Write-Host "  [OK] Added $($newEntries.Count) telemetry hosts to $hostsPath"
+    Write-Host "  [CHANGED] Added $($newEntries.Count) telemetry hosts to $hostsPath" -ForegroundColor Green
 } else {
-    Write-Host "  [OK] All telemetry hosts already present in hosts file"
+    Write-Host "  [SAME]    All telemetry hosts already present in hosts file" -ForegroundColor DarkGray
 }
 
 # Flush DNS so blocks take effect immediately
@@ -443,8 +504,9 @@ Write-Host ""
 Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║                   SUMMARY                    ║" -ForegroundColor Cyan
 Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
-Write-Host ("║  ✔  Passed : {0,-32}║" -f $Script:PassCount)  -ForegroundColor Green
-Write-Host ("║  ✘  Failed : {0,-32}║" -f $Script:FailCount)  -ForegroundColor $(if ($Script:FailCount -gt 0) {"Red"} else {"Green"})
+Write-Host ("║  ↻  Changed      : {0,-26}║" -f $Script:ChangedCount)    -ForegroundColor Green
+Write-Host ("║  =  Already set  : {0,-26}║" -f $Script:AlreadySetCount) -ForegroundColor DarkGray
+Write-Host ("║  ✘  Failed       : {0,-26}║" -f $Script:FailCount)        -ForegroundColor $(if ($Script:FailCount -gt 0) {"Red"} else {"Green"})
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Log saved to: $LogPath" -ForegroundColor DarkGray
