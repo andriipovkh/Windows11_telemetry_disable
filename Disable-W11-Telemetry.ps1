@@ -1,6 +1,6 @@
 # =============================================================================
 # Windows 11 Telemetry Reduction & Privacy improvement Script
-# Version 2.0
+# Version 2.1
 # =============================================================================
 # Covers:
 #   1.  Diagnostic data registry keys
@@ -18,8 +18,25 @@
 #  13.  Cloud Clipboard sync
 #  14.  Microsoft Edge telemetry
 #  15.  Delivery Optimization (P2P upload limits)
-#  16.  Hosts-file block of known telemetry endpoints (optional)
-#  17.  Summary report + transcript log
+#  16.  Windows Copilot / Copilot app removal
+#  17.  Widgets (News and Interests)
+#  18.  Speech & text input privacy
+#  19.  Hosts-file block of known telemetry endpoints (optional)
+#  20.  Summary report + transcript log
+# =============================================================================
+# Changelog
+#   2.1  - Fixed Disable-ScheduledTaskSafe: Get-ScheduledTask requires the
+#           trailing backslash on -TaskPath. Split-Path strips it when it
+#           computes the parent folder, so every task in Section 4 was being
+#           silently reported [SKIP] even though all 15 exist. Re-appended
+#           the trailing slash so the lookup actually matches.
+#         - Added Section 16 (Windows Copilot), Section 17 (Widgets), and
+#           Section 18 (speech / text input privacy) to cover surfaces added
+#           to Windows 11 since v2.0.
+#         - Renumbered the former Section 16 (hosts file) -> 19 and former
+#           Section 17 (summary) -> 20 to make room. Their content/logic is
+#           otherwise unchanged from v2.0.
+#   2.0  - Original version.
 # =============================================================================
 
 #region ── Bootstrap ──────────────────────────────────────────────────────────
@@ -37,7 +54,7 @@ Start-Transcript -Path $LogPath -Append | Out-Null
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   Windows 11 Telemetry Reduction  v2.0                   ║" -ForegroundColor Cyan
+Write-Host "║   Windows 11 Telemetry Reduction  v2.1                   ║" -ForegroundColor Cyan
 Write-Host "║   Log → $LogPath   ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
@@ -81,9 +98,12 @@ function Set-RegValue {
 function Disable-ScheduledTaskSafe {
     param([string]$TaskPath)
     try {
-        $t = Get-ScheduledTask -TaskPath (Split-Path $TaskPath) `
-                               -TaskName  (Split-Path $TaskPath -Leaf) `
-                               -ErrorAction Stop
+        # Get-ScheduledTask requires the trailing backslash on -TaskPath.
+        # Split-Path strips it when computing the parent folder, so it has
+        # to be re-appended here or the lookup silently matches nothing.
+        $folder = (Split-Path $TaskPath) + '\'
+        $name   = Split-Path $TaskPath -Leaf
+        $t = Get-ScheduledTask -TaskPath $folder -TaskName $name -ErrorAction Stop
         Disable-ScheduledTask -InputObject $t | Out-Null
         Write-Host "  [OK] Task disabled: $TaskPath"
         $Script:PassCount++
@@ -314,9 +334,50 @@ Set-RegValue "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimizati
              "DOMonthlyUploadDataCap" 1
 
 # =============================================================================
-# 16. (Optional) Hosts-file Telemetry Endpoint Blocking
+# 16. Windows Copilot
 # =============================================================================
-Write-Host "`n[16] Hosts-file Telemetry Blocking" -ForegroundColor Yellow
+Write-Host "`n[16] Windows Copilot" -ForegroundColor Yellow
+
+# Removes the taskbar Copilot icon/sidebar. Long-documented policy, works on
+# Pro/Enterprise/Education via either HKLM (all users) or HKCU (current user).
+Set-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" `
+             "TurnOffWindowsCopilot" 1
+
+# Newer policy, added in the Windows 11 April 2026 update ("Remove Microsoft
+# Copilot app" under Windows Components > Windows AI). Uninstalls the Copilot
+# app outright instead of just hiding the taskbar icon. Documented as
+# supported on Pro as well as Enterprise/Education.
+Set-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" `
+             "RemoveMicrosoftCopilotApp" 1
+
+# =============================================================================
+# 17. Widgets (News and Interests)
+# =============================================================================
+Write-Host "`n[17] Widgets" -ForegroundColor Yellow
+
+# Machine-wide policy toggle. More durable than the taskbar on/off switch,
+# which some updates and Web Experience Pack reinstalls silently flip back on.
+Set-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" `
+             "AllowNewsAndInterests" 0
+
+# =============================================================================
+# 18. Speech & Text Input Privacy
+# =============================================================================
+Write-Host "`n[18] Speech & Text Input Privacy" -ForegroundColor Yellow
+
+# Online speech recognition consent (affects dictation / "Hey Cortana"-style
+# cloud speech processing)
+Set-RegValue "HKCU:\Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy" `
+             "HasAccepted" 0
+
+# Text Input Personalization/Cloud — companion to the Section 10 inking keys
+Set-RegValue "HKCU:\Software\Microsoft\Input\TIPC" `
+             "Enabled" 0
+
+# =============================================================================
+# 19. (Optional) Hosts-file Telemetry Endpoint Blocking
+# =============================================================================
+Write-Host "`n[19] Hosts-file Telemetry Blocking" -ForegroundColor Yellow
 
 $telemetryHosts = @(
     "vortex.data.microsoft.com"
@@ -376,7 +437,7 @@ ipconfig /flushdns | Out-Null
 Write-Host "  [OK] DNS cache flushed"
 
 # =============================================================================
-# 17. Summary
+# 20. Summary
 # =============================================================================
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
